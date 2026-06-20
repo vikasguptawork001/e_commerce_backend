@@ -51,13 +51,24 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date() });
 });
 
-// Frontend static files serve karna
-app.use(express.static(path.join(__dirname, '../Frontend/build')));
+// Frontend static files serve karna (optional/robust check)
+const frontendBuildPath = path.join(__dirname, '../Frontend/build');
+const frontendIndexHtml = path.join(frontendBuildPath, 'index.html');
 
-// React Router ke liye - koi bhi unknown route index.html pe bhejo
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../Frontend/build/index.html'));
-});
+if (fs.existsSync(frontendIndexHtml)) {
+  app.use(express.static(frontendBuildPath));
+  app.get('*', (req, res) => {
+    res.sendFile(frontendIndexHtml);
+  });
+} else {
+  // If frontend is deployed separately, or not built yet
+  app.get('*', (req, res) => {
+    res.status(404).json({
+      success: false,
+      message: 'ShopKart API is running. Frontend static build was not found.'
+    });
+  });
+}
 
 // Global error handler
 app.use(errorHandler);
