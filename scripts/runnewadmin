@@ -1,0 +1,21 @@
+Step A: Sirf Password badalna ho
+Command: node scripts/createAdmin.js <aapka_email> <naya_password>
+
+Example: node scripts/createAdmin.js admin@test.com myNewPass789
+
+Step B: Sirf Email badalna ho
+Command: node scripts/createAdmin.js <purana_email> null <naya_email>
+
+Example: node scripts/createAdmin.js old@test.com null new@test.com
+
+(Beech mein null likhne ka matlab hai ki password wahi purana rahe).
+
+Step C: Dono badalna ho (Email + Password)
+Command: node scripts/createAdmin.js <purana_email> <naya_password> <naya_email>
+
+Example: node scripts/createAdmin.js old@test.com pass123 new@test.com
+
+Step D: Naya Admin banana ho
+Command: node scripts/createAdmin.js <naya_email> <password>
+
+Example: node scripts/createAdmin.js fresh@test.com welcome123
