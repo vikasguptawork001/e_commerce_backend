@@ -630,7 +630,7 @@ const getUserOrders = asyncHandler(async (req, res) => {
 
   for (const order of orders) {
     const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images
+      SELECT oi.*, p.images AS product_images, p.hsn_code
       FROM order_items oi
       LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?
@@ -644,7 +644,7 @@ const getUserOrders = asyncHandler(async (req, res) => {
         image = imgs[0] || '';
       } catch { image = ''; }
       const { product_images, ...rest } = item;
-      return { ...rest, image };
+      return { ...rest, image, hsn_code: item.hsn_code };
     });
   }
 
@@ -860,7 +860,7 @@ const getAllOrders = asyncHandler(async (req, res) => {
 
   for (const order of orders) {
     const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images
+      SELECT oi.*, p.images AS product_images, p.hsn_code
       FROM order_items oi
       LEFT JOIN products p ON p.id = oi.product_id
       WHERE oi.order_id = ?
@@ -874,7 +874,7 @@ const getAllOrders = asyncHandler(async (req, res) => {
         image = imgs[0] || '';
       } catch { image = ''; }
       const { product_images, ...rest } = item;
-      return { ...rest, image };
+      return { ...rest, image, hsn_code: item.hsn_code };
     });
   }
 

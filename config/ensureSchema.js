@@ -69,6 +69,7 @@ async function ensureSchema() {
       'ALTER TABLE products ADD COLUMN rating_count INT DEFAULT 0',
       'ALTER TABLE products ADD COLUMN has_disclaimer TINYINT DEFAULT 0',
       'ALTER TABLE products ADD COLUMN slug VARCHAR(300) DEFAULT NULL',
+      'ALTER TABLE products ADD COLUMN hsn_code VARCHAR(50) DEFAULT NULL',
     ];
     for (const sql of productColumns) {
       await safeQuery(sql);

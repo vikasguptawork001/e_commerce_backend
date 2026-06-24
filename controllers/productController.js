@@ -168,6 +168,7 @@ const createProduct = asyncHandler(async (req, res) => {
   const {
     name, description, brand, price, original_price,
     stock, category_id, sizes, colors, tags, has_disclaimer,
+    hsn_code,
   } = req.body;
 
   if (!name || !price || !original_price || !category_id) {
@@ -200,8 +201,8 @@ const createProduct = asyncHandler(async (req, res) => {
   const [result] = await pool.query(`
     INSERT INTO products
       (seller_id, category_id, name, description, brand, price, original_price,
-       stock, sizes, colors, images, tags, has_disclaimer)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       stock, sizes, colors, images, tags, has_disclaimer, hsn_code)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `, [
     req.user.id, category_id, name, description || '', brand || '',
     price, original_price, totalStock,
@@ -210,6 +211,7 @@ const createProduct = asyncHandler(async (req, res) => {
     JSON.stringify(images),
     JSON.stringify(toArray(tags)),
     disclaimerVal,
+    hsn_code || null,
   ]);
 
   const newId = result.insertId;
@@ -238,6 +240,7 @@ const updateProduct = asyncHandler(async (req, res) => {
   const {
     name, description, brand, price, original_price,
     stock, category_id, sizes, colors, tags, is_active, has_disclaimer,
+    hsn_code,
   } = req.body;
 
   let sizesParsed;
@@ -295,7 +298,8 @@ const updateProduct = asyncHandler(async (req, res) => {
       name = ?, description = ?, brand = ?, price = ?,
       original_price = ?, stock = ?, category_id = ?,
       sizes = ?, colors = ?, images = ?, tags = ?,
-      is_active = ?, slug = ?, has_disclaimer = ?
+      is_active = ?, slug = ?, has_disclaimer = ?,
+      hsn_code = ?
     WHERE id = ?
   `, [
     updatedName,
@@ -312,6 +316,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     isActiveVal,
     newSlug,
     disclaimerVal,
+    hsn_code !== undefined ? hsn_code : product.hsn_code,
     id,
   ]);
 
