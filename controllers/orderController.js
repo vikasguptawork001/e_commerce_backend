@@ -634,9 +634,11 @@ const getUserOrders = asyncHandler(async (req, res) => {
 
   for (const order of orders) {
     const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images, p.hsn_code
+      SELECT oi.*, p.images AS product_images, p.hsn_code,
+             sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
       FROM order_items oi
       LEFT JOIN products p ON p.id = oi.product_id
+      LEFT JOIN seller_profiles sp ON sp.user_id = oi.seller_id
       WHERE oi.order_id = ?
     `, [order.id]);
 
@@ -648,7 +650,7 @@ const getUserOrders = asyncHandler(async (req, res) => {
         image = imgs[0] || '';
       } catch { image = ''; }
       const { product_images, ...rest } = item;
-      return { ...rest, image, hsn_code: item.hsn_code };
+      return { ...rest, image, hsn_code: item.hsn_code, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
     });
   }
 
@@ -801,11 +803,25 @@ const getSellerOrders = asyncHandler(async (req, res) => {
   `, [sellerId, ...params, Number(limit), offset]);
 
   for (const order of orders) {
-    const [items] = await pool.query(
-      'SELECT * FROM order_items WHERE order_id = ? AND seller_id = ?',
-      [order.id, sellerId]
-    );
-    order.items = items;
+    const [items] = await pool.query(`
+      SELECT oi.*, p.images AS product_images, p.hsn_code,
+             sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
+      FROM order_items oi
+      LEFT JOIN products p ON p.id = oi.product_id
+      LEFT JOIN seller_profiles sp ON sp.user_id = oi.seller_id
+      WHERE oi.order_id = ? AND oi.seller_id = ?
+    `, [order.id, sellerId]);
+
+    order.items = items.map(item => {
+      let image = '';
+      try {
+        const raw  = item.product_images;
+        const imgs = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
+        image = imgs[0] || '';
+      } catch { image = ''; }
+      const { product_images, ...rest } = item;
+      return { ...rest, image, hsn_code: item.hsn_code, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
+    });
   }
 
   res.json({ success: true, orders, page: Number(page), limit: Number(limit) });
@@ -866,9 +882,11 @@ const getAllOrders = asyncHandler(async (req, res) => {
 
   for (const order of orders) {
     const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images, p.hsn_code
+      SELECT oi.*, p.images AS product_images, p.hsn_code,
+             sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
       FROM order_items oi
       LEFT JOIN products p ON p.id = oi.product_id
+      LEFT JOIN seller_profiles sp ON sp.user_id = oi.seller_id
       WHERE oi.order_id = ?
     `, [order.id]);
 
@@ -880,7 +898,7 @@ const getAllOrders = asyncHandler(async (req, res) => {
         image = imgs[0] || '';
       } catch { image = ''; }
       const { product_images, ...rest } = item;
-      return { ...rest, image, hsn_code: item.hsn_code };
+      return { ...rest, image, hsn_code: item.hsn_code, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
     });
   }
 
