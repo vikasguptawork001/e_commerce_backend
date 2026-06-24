@@ -15,6 +15,20 @@ const tryParse = (val, fallback) => {
   }
 };
 
+const parseSizesInput = (val) => {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      return val.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+  return [val];
+};
+
 const fixImageUrl = (url) => {
   if (!url) return url;
   if (isCloudinaryUrl(url) || url.startsWith('http')) return url;
@@ -169,6 +183,12 @@ const createProduct = asyncHandler(async (req, res) => {
     images = await resolveImagesToCloudinary(raw.filter(Boolean));
   }
 
+  const sizesParsed = parseSizesInput(sizes);
+  let totalStock = Number(stock) || 0;
+  if (sizesParsed.length > 0 && sizesParsed.some(s => typeof s === 'object' && s !== null)) {
+    totalStock = sizesParsed.reduce((sum, s) => sum + (s.quantity !== undefined ? Number(s.quantity) : 0), 0);
+  }
+
   const toArray = (val) => {
     if (!val) return [];
     if (Array.isArray(val)) return val;
@@ -184,8 +204,8 @@ const createProduct = asyncHandler(async (req, res) => {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `, [
     req.user.id, category_id, name, description || '', brand || '',
-    price, original_price, stock || 0,
-    JSON.stringify(toArray(sizes)),
+    price, original_price, totalStock,
+    JSON.stringify(sizesParsed),
     JSON.stringify(toArray(colors)),
     JSON.stringify(images),
     JSON.stringify(toArray(tags)),
@@ -220,9 +240,29 @@ const updateProduct = asyncHandler(async (req, res) => {
     stock, category_id, sizes, colors, tags, is_active, has_disclaimer,
   } = req.body;
 
-  const stockVal = (stock !== undefined && stock !== '' && stock !== null)
-    ? Number(product.stock) + Number(stock)
-    : Number(product.stock);
+  let sizesParsed;
+  let stockVal = product.stock;
+
+  if (sizes !== undefined) {
+    sizesParsed = parseSizesInput(sizes);
+    if (sizesParsed.length > 0 && sizesParsed.some(s => typeof s === 'object' && s !== null)) {
+      stockVal = sizesParsed.reduce((sum, s) => sum + (s.quantity !== undefined ? Number(s.quantity) : 0), 0);
+    } else {
+      stockVal = (stock !== undefined && stock !== '' && stock !== null)
+        ? Number(product.stock) + Number(stock)
+        : Number(product.stock);
+    }
+  } else {
+    sizesParsed = tryParse(product.sizes, []);
+    const hasSizeObjs = sizesParsed.length > 0 && sizesParsed.some(s => typeof s === 'object' && s !== null);
+    if (hasSizeObjs) {
+      stockVal = sizesParsed.reduce((sum, s) => sum + (s.quantity !== undefined ? Number(s.quantity) : 0), 0);
+    } else {
+      stockVal = (stock !== undefined && stock !== '' && stock !== null)
+        ? Number(product.stock) + Number(stock)
+        : Number(product.stock);
+    }
+  }
 
   let images = tryParse(product.images, []);
   if (req.files && req.files.length > 0) {
@@ -265,7 +305,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     original_price || product.original_price,
     stockVal,
     category_id    || product.category_id,
-    JSON.stringify(Array.isArray(sizes)  ? sizes  : tryParse(product.sizes,  [])),
+    JSON.stringify(sizesParsed),
     JSON.stringify(Array.isArray(colors) ? colors : tryParse(product.colors, [])),
     JSON.stringify(images),
     JSON.stringify(Array.isArray(tags)   ? tags   : tryParse(product.tags,   [])),
@@ -340,10 +380,30 @@ const getSellerAnalytics = asyncHandler(async (req, res) => {
 // PATCH /api/admin/products/:id/toggle-stock
 const toggleStock = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const [[product]] = await pool.query('SELECT id, stock FROM products WHERE id = ?', [id]);
+  const [[product]] = await pool.query('SELECT id, stock, sizes FROM products WHERE id = ?', [id]);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
   const newStock = product.stock > 0 ? 0 : 10;
-  await pool.query('UPDATE products SET stock = ? WHERE id = ?', [newStock, id]);
+  
+  let updatedSizes = [];
+  const productSizes = tryParse(product.sizes, []);
+  if (productSizes.length > 0) {
+    updatedSizes = productSizes.map(s => {
+      if (typeof s === 'object' && s !== null) {
+        return {
+          ...s,
+          quantity: newStock === 0 ? 0 : 5
+        };
+      }
+      return s;
+    });
+  }
+  
+  if (productSizes.length > 0 && productSizes.some(s => typeof s === 'object' && s !== null)) {
+    await pool.query('UPDATE products SET stock = ?, sizes = ? WHERE id = ?', [newStock, JSON.stringify(updatedSizes), id]);
+  } else {
+    await pool.query('UPDATE products SET stock = ? WHERE id = ?', [newStock, id]);
+  }
+  
   res.json({
     success: true,
     message: newStock === 0 ? 'Product marked as Out of Stock' : 'Product marked as In Stock',

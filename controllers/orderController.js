@@ -4,6 +4,14 @@ const Razorpay         = require('razorpay');
 const crypto           = require('crypto');
 const nodemailer       = require('nodemailer');
 
+const tryParse = (val, fallback) => {
+  try {
+    return typeof val === 'string' ? JSON.parse(val) : (val || fallback);
+  } catch {
+    return fallback;
+  }
+};
+
 const razorpay = new Razorpay({
   key_id:     process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
@@ -489,10 +497,29 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
 
   for (const item of items) {
     const [[product]] = await pool.query(
-      'SELECT id, name, price, stock, seller_id FROM products WHERE id = ? AND is_active = 1',
+      'SELECT id, name, price, stock, sizes, seller_id FROM products WHERE id = ? AND is_active = 1',
       [item.product_id]
     );
     if (!product) return res.status(400).json({ success: false, message: `Product not found: ${item.product_id}` });
+    
+    // Size-wise stock check
+    const productSizes = tryParse(product.sizes, []);
+    if (productSizes.length > 0 && item.size) {
+      const sizeObj = productSizes.find(s => 
+        typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()
+      );
+      if (sizeObj) {
+        if (sizeObj.quantity < item.quantity) {
+          return res.status(400).json({ success: false, message: `${product.name} (Size: ${item.size}) does not have enough stock` });
+        }
+      } else {
+        const isLegacy = productSizes.every(s => typeof s !== 'object');
+        if (!isLegacy) {
+          return res.status(400).json({ success: false, message: `Size ${item.size} is not available for ${product.name}` });
+        }
+      }
+    }
+
     if (product.stock < item.quantity) return res.status(400).json({ success: false, message: `${product.name} is out of stock` });
     total += product.price * item.quantity;
     enriched.push({ ...item, product, price: product.price });
@@ -524,8 +551,31 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
       `, [orderId, item.product.id, item.product.seller_id, item.product.name,
           item.price, item.quantity, item.size || null, item.color || null]);
 
-      await conn.query('UPDATE products SET stock = stock - ? WHERE id = ?',
-        [item.quantity, item.product.id]);
+      // Deduct size-wise stock
+      const productSizes = tryParse(item.product.sizes, []);
+      let updatedSizes = productSizes;
+      let hasUpdatedSizeStock = false;
+      
+      if (productSizes.length > 0 && item.size) {
+        updatedSizes = productSizes.map(s => {
+          if (typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()) {
+            hasUpdatedSizeStock = true;
+            return {
+              ...s,
+              quantity: Math.max(0, s.quantity - item.quantity)
+            };
+          }
+          return s;
+        });
+      }
+      
+      if (hasUpdatedSizeStock) {
+        await conn.query('UPDATE products SET stock = stock - ?, sizes = ? WHERE id = ?',
+          [item.quantity, JSON.stringify(updatedSizes), item.product.id]);
+      } else {
+        await conn.query('UPDATE products SET stock = stock - ? WHERE id = ?',
+          [item.quantity, item.product.id]);
+      }
     }
 
     await conn.commit();
@@ -616,10 +666,29 @@ const placeOrder = asyncHandler(async (req, res) => {
 
   for (const item of items) {
     const [[product]] = await pool.query(
-      'SELECT id, name, price, stock, seller_id FROM products WHERE id = ? AND is_active = 1',
+      'SELECT id, name, price, stock, sizes, seller_id FROM products WHERE id = ? AND is_active = 1',
       [item.product_id]
     );
     if (!product) return res.status(400).json({ success: false, message: 'Product not found' });
+    
+    // Size-wise stock check
+    const productSizes = tryParse(product.sizes, []);
+    if (productSizes.length > 0 && item.size) {
+      const sizeObj = productSizes.find(s => 
+        typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()
+      );
+      if (sizeObj) {
+        if (sizeObj.quantity < item.quantity) {
+          return res.status(400).json({ success: false, message: `${product.name} (Size: ${item.size}) does not have enough stock` });
+        }
+      } else {
+        const isLegacy = productSizes.every(s => typeof s !== 'object');
+        if (!isLegacy) {
+          return res.status(400).json({ success: false, message: `Size ${item.size} is not available for ${product.name}` });
+        }
+      }
+    }
+
     if (product.stock < item.quantity) return res.status(400).json({ success: false, message: `${product.name} is out of stock` });
     total += product.price * item.quantity;
     enriched.push({ ...item, product, price: product.price });
@@ -647,8 +716,31 @@ const placeOrder = asyncHandler(async (req, res) => {
       `, [orderId, item.product.id, item.product.seller_id, item.product.name,
           item.price, item.quantity, item.size || null, item.color || null]);
 
-      await conn.query('UPDATE products SET stock = stock - ? WHERE id = ?',
-        [item.quantity, item.product.id]);
+      // Deduct size-wise stock
+      const productSizes = tryParse(item.product.sizes, []);
+      let updatedSizes = productSizes;
+      let hasUpdatedSizeStock = false;
+      
+      if (productSizes.length > 0 && item.size) {
+        updatedSizes = productSizes.map(s => {
+          if (typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()) {
+            hasUpdatedSizeStock = true;
+            return {
+              ...s,
+              quantity: Math.max(0, s.quantity - item.quantity)
+            };
+          }
+          return s;
+        });
+      }
+      
+      if (hasUpdatedSizeStock) {
+        await conn.query('UPDATE products SET stock = stock - ?, sizes = ? WHERE id = ?',
+          [item.quantity, JSON.stringify(updatedSizes), item.product.id]);
+      } else {
+        await conn.query('UPDATE products SET stock = stock - ? WHERE id = ?',
+          [item.quantity, item.product.id]);
+      }
     }
 
     await conn.commit();
