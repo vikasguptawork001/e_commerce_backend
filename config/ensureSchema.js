@@ -76,6 +76,17 @@ async function ensureSchema() {
     }
   }
 
+  const [orderTable] = await pool.query("SHOW TABLES LIKE 'orders'");
+  if (orderTable.length) {
+    const orderColumns = [
+      'ALTER TABLE orders ADD COLUMN gst_number VARCHAR(20) DEFAULT NULL',
+      'ALTER TABLE orders ADD COLUMN company_name VARCHAR(150) DEFAULT NULL',
+    ];
+    for (const sql of orderColumns) {
+      await safeQuery(sql);
+    }
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reviews (
       id INT AUTO_INCREMENT PRIMARY KEY,

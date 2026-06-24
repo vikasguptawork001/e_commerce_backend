@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS orders (
   payment_method VARCHAR(50) DEFAULT 'COD',
   payment_status ENUM('pending','paid','failed','refunded') DEFAULT 'pending',
   notes          TEXT,
+  gst_number     VARCHAR(20) DEFAULT NULL,
+  company_name   VARCHAR(150) DEFAULT NULL,
   created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE SET NULL

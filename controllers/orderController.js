@@ -477,6 +477,7 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
     razorpay_order_id, razorpay_payment_id, razorpay_signature,
     customer_name, customer_email, customer_phone,
     address, items,
+    gst_number, company_name,
   } = req.body;
 
   const expectedSig = crypto
@@ -532,13 +533,16 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
     const [orderRes] = await conn.query(`
       INSERT INTO orders
         (customer_id, customer_name, customer_email, customer_phone,
-         address, total_amount, payment_method, payment_status, status, notes)
-      VALUES (?,?,?,?,?,?,'Razorpay','paid','confirmed',?)
+         address, total_amount, payment_method, payment_status, status, notes,
+         gst_number, company_name)
+      VALUES (?,?,?,?,?,?,'Razorpay','paid','confirmed',?,?,?)
     `, [
       req.user?.id || null,
       customer_name, customer_email, customer_phone || null,
       address, total,
       `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id}`,
+      gst_number || null,
+      company_name || null,
     ]);
 
     const orderId = orderRes.insertId;
@@ -623,7 +627,7 @@ const getUserOrders = asyncHandler(async (req, res) => {
   const [orders] = await pool.query(`
     SELECT o.id, o.customer_name, o.customer_email, o.customer_phone,
            o.address, o.total_amount, o.status, o.payment_method,
-           o.payment_status, o.notes, o.created_at
+           o.payment_status, o.notes, o.created_at, o.gst_number, o.company_name
     FROM orders o WHERE o.customer_id = ?
     ORDER BY o.created_at DESC
   `, [req.user.id]);
@@ -655,7 +659,7 @@ const getUserOrders = asyncHandler(async (req, res) => {
 // POST /api/orders (legacy COD)
 // ─────────────────────────────────────────
 const placeOrder = asyncHandler(async (req, res) => {
-  const { customer_name, customer_email, customer_phone, address, items, payment_method = 'COD', notes } = req.body;
+  const { customer_name, customer_email, customer_phone, address, items, payment_method = 'COD', notes, gst_number, company_name } = req.body;
 
   if (!customer_name || !customer_email || !address || !items?.length) {
     return res.status(400).json({ success: false, message: 'Required fields missing' });
@@ -701,10 +705,11 @@ const placeOrder = asyncHandler(async (req, res) => {
     const [orderRes] = await conn.query(`
       INSERT INTO orders
         (customer_id, customer_name, customer_email, customer_phone,
-         address, total_amount, payment_method, notes)
-      VALUES (?,?,?,?,?,?,?,?)
+         address, total_amount, payment_method, notes, gst_number, company_name)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `, [req.user?.id || null, customer_name, customer_email,
-        customer_phone || null, address, total, payment_method, notes || null]);
+        customer_phone || null, address, total, payment_method, notes || null,
+        gst_number || null, company_name || null]);
 
     const orderId = orderRes.insertId;
 
@@ -789,6 +794,7 @@ const getSellerOrders = asyncHandler(async (req, res) => {
   const [orders] = await pool.query(`
     SELECT DISTINCT o.id, o.customer_name, o.customer_email, o.customer_phone,
       o.address, o.total_amount, o.status, o.payment_method, o.payment_status, o.created_at,
+      o.gst_number, o.company_name,
       (SELECT COUNT(*) FROM order_items WHERE order_id = o.id AND seller_id = ?) AS item_count
     FROM orders o JOIN order_items oi ON oi.order_id = o.id
     ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?
