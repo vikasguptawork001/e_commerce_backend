@@ -70,6 +70,9 @@ async function ensureSchema() {
       'ALTER TABLE products ADD COLUMN has_disclaimer TINYINT DEFAULT 0',
       'ALTER TABLE products ADD COLUMN slug VARCHAR(300) DEFAULT NULL',
       'ALTER TABLE products ADD COLUMN hsn_code VARCHAR(50) DEFAULT NULL',
+      'ALTER TABLE products ADD COLUMN gst_percent DECIMAL(5,2) DEFAULT 5.00',
+      'ALTER TABLE products ADD COLUMN color_variants JSON DEFAULT NULL',
+      'ALTER TABLE products ADD COLUMN is_free_size TINYINT DEFAULT 1',
     ];
     for (const sql of productColumns) {
       await safeQuery(sql);
@@ -81,9 +84,18 @@ async function ensureSchema() {
     const orderColumns = [
       'ALTER TABLE orders ADD COLUMN gst_number VARCHAR(20) DEFAULT NULL',
       'ALTER TABLE orders ADD COLUMN company_name VARCHAR(150) DEFAULT NULL',
+      'ALTER TABLE orders ADD COLUMN razorpay_payment_id VARCHAR(191) DEFAULT NULL',
+      'ALTER TABLE orders ADD COLUMN razorpay_order_id VARCHAR(100) DEFAULT NULL',
     ];
     for (const sql of orderColumns) {
       await safeQuery(sql);
+    }
+    try {
+      await pool.query(
+        'CREATE UNIQUE INDEX idx_orders_razorpay_payment_id ON orders (razorpay_payment_id)'
+      );
+    } catch (err) {
+      if (err.code !== 'ER_DUP_KEYNAME') throw err;
     }
   }
 
@@ -122,6 +134,40 @@ async function ensureSchema() {
       await pool.query('UPDATE products SET slug = ? WHERE id = ?', [`${base}-${p.id}`, p.id]);
     }
   }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_addresses (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      email VARCHAR(150) NOT NULL,
+      phone VARCHAR(20) NOT NULL,
+      alt_phone VARCHAR(20) DEFAULT NULL,
+      address TEXT NOT NULL,
+      landmark VARCHAR(255) DEFAULT NULL,
+      city VARCHAR(100) NOT NULL,
+      state VARCHAR(100) NOT NULL,
+      pincode VARCHAR(10) NOT NULL,
+      gst_number VARCHAR(20) DEFAULT NULL,
+      company_name VARCHAR(150) DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_user_addresses_user (user_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS wishlists (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      product_id INT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_wishlist_user_product (user_id, product_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    )
+  `);
 
   console.log('✅ Database schema verified');
 }

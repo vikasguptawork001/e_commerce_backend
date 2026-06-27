@@ -474,9 +474,34 @@ const toggleBanner = asyncHandler(async (req, res) => {
   res.json({ success: true, is_active: !b.is_active });
 });
 
+const updateCategory = asyncHandler(async (req, res) => {
+  const { name, emoji } = req.body;
+  if (!name) {
+    return res.status(400).json({ success: false, message: 'Category name is required' });
+  }
+  const slug = name.toLowerCase().replace(/\s+/g, '-');
+  await pool.query(
+    'UPDATE categories SET name = ?, slug = ?, emoji = ? WHERE id = ?',
+    [name, slug, emoji || '🛍️', req.params.id]
+  );
+  res.json({ success: true, message: 'Category updated successfully' });
+});
+
+const deleteCategory = asyncHandler(async (req, res) => {
+  const [[hasProducts]] = await pool.query('SELECT COUNT(*) AS count FROM products WHERE category_id = ?', [req.params.id]);
+  if (hasProducts.count > 0) {
+    return res.status(400).json({
+      success: false,
+      message: `Cannot delete category: it is assigned to ${hasProducts.count} products.`
+    });
+  }
+  await pool.query('DELETE FROM categories WHERE id = ?', [req.params.id]);
+  res.json({ success: true, message: 'Category deleted successfully' });
+});
+
 module.exports = {
   getDashboard, getUsers, toggleUserActive, verifySeller, createUser,
-  getCategories, getAllCategories, createCategory, toggleCategory,
+  getCategories, getAllCategories, createCategory, toggleCategory, updateCategory, deleteCategory,
   trackView, getPageViews,
   sendContactMessage, getContactMessages, markMessageRead,
   replyToMessage, deleteContactMessage, getMyMessages,

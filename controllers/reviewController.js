@@ -17,6 +17,27 @@ async function resolveProductId(idOrSlug) {
   return row.id;
 }
 
+/** User must have a delivered order containing this product */
+async function assertReviewEligible(userId, productId) {
+  const [[row]] = await pool.query(`
+    SELECT o.id
+    FROM orders o
+    INNER JOIN order_items oi ON oi.order_id = o.id
+    WHERE o.customer_id = ?
+      AND oi.product_id = ?
+      AND o.status = 'delivered'
+    LIMIT 1
+  `, [userId, productId]);
+
+  if (!row) {
+    const err = new Error(
+      'You can only review products from orders that have been delivered.'
+    );
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
 // GET /api/products/:id/reviews
 const getReviews = asyncHandler(async (req, res) => {
   const productId = await resolveProductId(req.params.id);
@@ -41,9 +62,11 @@ const addReview = asyncHandler(async (req, res) => {
   if (!rating || rating < 1 || rating > 5) {
     return res.status(400).json({
       success: false,
-      message: 'Rating 1 se 5 ',
+      message: 'Rating must be between 1 and 5',
     });
   }
+
+  await assertReviewEligible(userId, productId);
 
   const [[existing]] = await pool.query(
     'SELECT id FROM reviews WHERE product_id = ? AND user_id = ?',
@@ -62,7 +85,7 @@ const addReview = asyncHandler(async (req, res) => {
     );
   }
 
-  res.json({ success: true, message: 'Review submited' });
+  res.json({ success: true, message: 'Review submitted' });
 });
 
 // DELETE /api/products/:id/reviews

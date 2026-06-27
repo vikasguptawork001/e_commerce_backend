@@ -14,13 +14,13 @@ const {
 
 const {
   createRazorpayOrder, verifyAndPlaceOrder, placeOrder,
-  getUserOrders, getSellerOrders, updateOrderStatus, getAllOrders,
+  getUserOrders, getSellerOrders, updateOrderStatus, getAllOrders, getPaymentHistory,
 } = require('../controllers/orderController');
 
 const {
   getDashboard, getUsers, toggleUserActive, verifySeller,
   createUser, getCategories, getAllCategories, createCategory,
-  toggleCategory, trackView, getPageViews,
+  toggleCategory, updateCategory, deleteCategory, trackView, getPageViews,
   sendContactMessage, getContactMessages, markMessageRead,
   replyToMessage, deleteContactMessage,
   getMyMessages,
@@ -31,6 +31,9 @@ const {
 const {
   getReviews, addReview, deleteReview,
 } = require('../controllers/reviewController');
+
+const { getAddresses, createAddress, deleteAddress } = require('../controllers/addressController');
+const { getWishlist, toggleWishlist } = require('../controllers/wishlistController');
 
 const { uploadImage } = require('../controllers/uploadController');
 
@@ -104,9 +107,12 @@ router.post ('/admin/users',                       protect, adminOnly, createUse
 router.put  ('/admin/users/:id/toggle',            protect, adminOnly, toggleUserActive);
 router.put  ('/admin/sellers/:id/verify',          protect, adminOnly, verifySeller);
 router.get  ('/admin/orders',                      protect, adminOnly, getAllOrders);
+router.get  ('/admin/payments',                    protect, adminOnly, getPaymentHistory);
 router.put  ('/admin/orders/:id/status',           protect, adminOnly, updateOrderStatus);
 router.post ('/admin/categories',                  protect, adminOnly, createCategory);
 router.get  ('/admin/categories',                  protect, adminOnly, getAllCategories);
+router.put  ('/admin/categories/:id',              protect, adminOnly, updateCategory);
+router.delete('/admin/categories/:id',             protect, adminOnly, deleteCategory);
 router.put  ('/admin/categories/:id/toggle',       protect, adminOnly, toggleCategory);
 router.patch('/admin/products/:id/toggle-stock',   protect, adminOnly, toggleStock);
 router.get  ('/admin/page-views',                  protect, adminOnly, getPageViews);
@@ -130,5 +136,18 @@ router.post('/orders/create-razorpay-order', protect, createRazorpayOrder);
 router.post('/orders/verify-payment',        protect, verifyAndPlaceOrder);
 router.post('/orders',                       protect, placeOrder);
 router.get ('/user/orders',                  protect, getUserOrders);
+
+// ══════════════════════════════════════════
+//  USER ADDRESSES (max 5)
+// ══════════════════════════════════════════
+router.get   ('/user/addresses',        protect, getAddresses);
+router.post  ('/user/addresses',        protect, createAddress);
+router.delete('/user/addresses/:id',    protect, deleteAddress);
+
+// ══════════════════════════════════════════
+//  USER WISHLIST
+// ══════════════════════════════════════════
+router.get ('/user/wishlist',              protect, getWishlist);
+router.post('/user/wishlist/:productId',  protect, toggleWishlist);
 
 module.exports = router;

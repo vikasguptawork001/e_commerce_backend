@@ -1,5 +1,6 @@
 const { pool }         = require('../config/db');
 const { asyncHandler } = require('../middleware/errorHandler');
+const { validateAndPriceItems, calcShipping, roundMoney } = require('../services/orderPricing');
 const Razorpay         = require('razorpay');
 const crypto           = require('crypto');
 const nodemailer       = require('nodemailer');
@@ -11,6 +12,56 @@ const tryParse = (val, fallback) => {
     return fallback;
   }
 };
+
+function mapOrderItemRow(item) {
+  let image = '';
+  try {
+    const raw  = item.product_images;
+    const imgs = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
+    image = imgs[0] || '';
+  } catch { image = ''; }
+  const { product_images, ...rest } = item;
+  return {
+    ...rest,
+    image,
+    hsn_code: item.hsn_code,
+    gst_percent: item.gst_percent,
+    seller_gst: item.seller_gst,
+    seller_shop_name: item.seller_shop_name,
+  };
+}
+
+function enrichOrderBreakdown(order, items) {
+  const subtotal = roundMoney(
+    items.reduce((s, i) => s + Number(i.price) * Number(i.quantity), 0)
+  );
+  const shipping = calcShipping(subtotal);
+  return {
+    ...order,
+    items,
+    subtotal,
+    shipping,
+    item_count: items.length,
+    free_delivery: shipping === 0 && items.length > 0,
+  };
+}
+
+async function attachOrderItems(orders, itemQueryExtra = '', itemParams = []) {
+  for (const order of orders) {
+    const [items] = await pool.query(`
+      SELECT oi.*, p.images AS product_images, p.hsn_code, p.gst_percent,
+             sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
+      FROM order_items oi
+      LEFT JOIN products p ON p.id = oi.product_id
+      LEFT JOIN seller_profiles sp ON sp.user_id = oi.seller_id
+      WHERE oi.order_id = ? ${itemQueryExtra}
+    `, [order.id, ...itemParams]);
+
+    const mapped = items.map(mapOrderItemRow);
+    Object.assign(order, enrichOrderBreakdown(order, mapped));
+  }
+  return orders;
+}
 
 const razorpay = new Razorpay({
   key_id:     process.env.RAZORPAY_KEY_ID,
@@ -449,15 +500,18 @@ const sendStatusUpdateEmail = async ({ to, name, orderId, status, address }) => 
 
 // ─────────────────────────────────────────
 // POST /api/orders/create-razorpay-order
+// Server computes amount from cart items — client amount is ignored.
 // ─────────────────────────────────────────
 const createRazorpayOrder = asyncHandler(async (req, res) => {
-  const { amount, currency = 'INR', receipt } = req.body;
-  if (!amount) return res.status(400).json({ success: false, message: 'Amount is required' });
+  const { items, currency = 'INR' } = req.body;
+
+  const priced = await validateAndPriceItems(pool, items);
+  const amountPaise = Math.round(priced.total * 100);
 
   const order = await razorpay.orders.create({
-    amount:  Math.round(amount * 100),
+    amount:   amountPaise,
     currency,
-    receipt: receipt || `receipt_${Date.now()}`,
+    receipt:  `rcpt_${req.user.id}_${Date.now()}`,
   });
 
   res.json({
@@ -466,8 +520,49 @@ const createRazorpayOrder = asyncHandler(async (req, res) => {
     amount:   order.amount,
     currency: order.currency,
     key:      process.env.RAZORPAY_KEY_ID,
+    subtotal: priced.subtotal,
+    shipping: priced.shipping,
+    total:    priced.total,
   });
 });
+
+async function deductStock(conn, enriched) {
+  for (const item of enriched) {
+    const productSizes = tryParse(item.product.sizes, []);
+    let updatedSizes = productSizes;
+    let hasUpdatedSizeStock = false;
+
+    if (productSizes.length > 0 && item.size) {
+      updatedSizes = productSizes.map(s => {
+        if (typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()) {
+          hasUpdatedSizeStock = true;
+          return { ...s, quantity: Math.max(0, s.quantity - item.quantity) };
+        }
+        return s;
+      });
+    }
+
+    if (hasUpdatedSizeStock) {
+      await conn.query(
+        'UPDATE products SET stock = stock - ?, sizes = ? WHERE id = ?',
+        [item.quantity, JSON.stringify(updatedSizes), item.product.id]
+      );
+    } else {
+      await conn.query(
+        'UPDATE products SET stock = stock - ? WHERE id = ?',
+        [item.quantity, item.product.id]
+      );
+    }
+  }
+}
+
+async function findOrderByPaymentId(paymentId) {
+  const [[row]] = await pool.query(
+    'SELECT id, total_amount, customer_email FROM orders WHERE razorpay_payment_id = ?',
+    [paymentId]
+  );
+  return row || null;
+}
 
 // ─────────────────────────────────────────
 // POST /api/orders/verify-payment
@@ -479,6 +574,23 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
     address, items,
     gst_number, company_name,
   } = req.body;
+
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return res.status(400).json({ success: false, message: 'Payment details incomplete' });
+  }
+
+  // Idempotency — same payment must not create duplicate orders
+  const existingOrder = await findOrderByPaymentId(razorpay_payment_id);
+  if (existingOrder) {
+    return res.status(200).json({
+      success:   true,
+      orderId:   existingOrder.id,
+      total:     Number(existingOrder.total_amount),
+      paymentId: razorpay_payment_id,
+      message:   'Order already placed',
+      duplicate: true,
+    });
+  }
 
   const expectedSig = crypto
     .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -493,98 +605,63 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: 'Order details incomplete' });
   }
 
-  let total = 0;
-  const enriched = [];
+  const priced = await validateAndPriceItems(pool, items);
+  const expectedPaise = Math.round(priced.total * 100);
 
-  for (const item of items) {
-    const [[product]] = await pool.query(
-      'SELECT id, name, price, stock, sizes, seller_id FROM products WHERE id = ? AND is_active = 1',
-      [item.product_id]
-    );
-    if (!product) return res.status(400).json({ success: false, message: `Product not found: ${item.product_id}` });
-    
-    // Size-wise stock check
-    const productSizes = tryParse(product.sizes, []);
-    if (productSizes.length > 0 && item.size) {
-      const sizeObj = productSizes.find(s => 
-        typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()
-      );
-      if (sizeObj) {
-        if (sizeObj.quantity < item.quantity) {
-          return res.status(400).json({ success: false, message: `${product.name} (Size: ${item.size}) does not have enough stock` });
-        }
-      } else {
-        const isLegacy = productSizes.every(s => typeof s !== 'object');
-        if (!isLegacy) {
-          return res.status(400).json({ success: false, message: `Size ${item.size} is not available for ${product.name}` });
-        }
-      }
-    }
+  let rzpOrder;
+  try {
+    rzpOrder = await razorpay.orders.fetch(razorpay_order_id);
+  } catch (err) {
+    return res.status(400).json({ success: false, message: 'Invalid Razorpay order' });
+  }
 
-    if (product.stock < item.quantity) return res.status(400).json({ success: false, message: `${product.name} is out of stock` });
-    total += product.price * item.quantity;
-    enriched.push({ ...item, product, price: product.price });
+  if (Number(rzpOrder.amount) !== expectedPaise) {
+    return res.status(400).json({
+      success: false,
+      message: 'Payment amount does not match order total',
+    });
   }
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
+    const notes = `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id}`;
+
     const [orderRes] = await conn.query(`
       INSERT INTO orders
         (customer_id, customer_name, customer_email, customer_phone,
          address, total_amount, payment_method, payment_status, status, notes,
-         gst_number, company_name)
-      VALUES (?,?,?,?,?,?,'Razorpay','paid','confirmed',?,?,?)
+         gst_number, company_name, razorpay_payment_id, razorpay_order_id)
+      VALUES (?,?,?,?,?,?,'Razorpay','paid','confirmed',?,?,?,?,?)
     `, [
       req.user?.id || null,
       customer_name, customer_email, customer_phone || null,
-      address, total,
-      `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id}`,
+      address, priced.total,
+      notes,
       gst_number || null,
       company_name || null,
+      razorpay_payment_id,
+      razorpay_order_id,
     ]);
 
     const orderId = orderRes.insertId;
 
-    for (const item of enriched) {
+    for (const item of priced.enriched) {
       await conn.query(`
         INSERT INTO order_items
           (order_id, product_id, seller_id, product_name, price, quantity, size, color)
         VALUES (?,?,?,?,?,?,?,?)
-      `, [orderId, item.product.id, item.product.seller_id, item.product.name,
-          item.price, item.quantity, item.size || null, item.color || null]);
-
-      // Deduct size-wise stock
-      const productSizes = tryParse(item.product.sizes, []);
-      let updatedSizes = productSizes;
-      let hasUpdatedSizeStock = false;
-      
-      if (productSizes.length > 0 && item.size) {
-        updatedSizes = productSizes.map(s => {
-          if (typeof s === 'object' && s !== null && s.size?.toLowerCase() === item.size.toLowerCase()) {
-            hasUpdatedSizeStock = true;
-            return {
-              ...s,
-              quantity: Math.max(0, s.quantity - item.quantity)
-            };
-          }
-          return s;
-        });
-      }
-      
-      if (hasUpdatedSizeStock) {
-        await conn.query('UPDATE products SET stock = stock - ?, sizes = ? WHERE id = ?',
-          [item.quantity, JSON.stringify(updatedSizes), item.product.id]);
-      } else {
-        await conn.query('UPDATE products SET stock = stock - ? WHERE id = ?',
-          [item.quantity, item.product.id]);
-      }
+      `, [
+        orderId, item.product.id, item.product.seller_id, item.product.name,
+        item.price, item.quantity, item.size || null, item.color || null,
+      ]);
     }
 
+    await deductStock(conn, priced.enriched);
     await conn.commit();
 
-    const emailItems = enriched.map(i => ({
+    const emailItems = priced.enriched.map(i => ({
       product_name: i.product.name,
       quantity:     i.quantity,
       size:         i.size  || null,
@@ -592,28 +669,40 @@ const verifyAndPlaceOrder = asyncHandler(async (req, res) => {
       price:        i.price,
     }));
 
-    // ✅ User ko confirmation email
     sendOrderConfirmationEmail({
       to: customer_email, name: customer_name,
-      orderId, items: emailItems, total, address,
+      orderId, items: emailItems, total: priced.total, address,
       paymentId: razorpay_payment_id,
     }).catch(err => console.error('User confirmation email error:', err));
 
-    // ✅ Admin ko notification email
     sendAdminOrderNotification({
       orderId, customer_name, customer_email,
-      customer_phone, items: emailItems, total, address,
+      customer_phone, items: emailItems, total: priced.total, address,
       paymentId: razorpay_payment_id,
     }).catch(err => console.error('Admin notification email error:', err));
 
     res.status(201).json({
-      success: true, orderId, total,
+      success: true, orderId, total: priced.total,
       paymentId: razorpay_payment_id,
       message: 'Order placed successfully!',
     });
 
   } catch (err) {
     await conn.rollback();
+
+    if (err.code === 'ER_DUP_ENTRY') {
+      const dup = await findOrderByPaymentId(razorpay_payment_id);
+      if (dup) {
+        return res.status(200).json({
+          success:   true,
+          orderId:   dup.id,
+          total:     Number(dup.total_amount),
+          paymentId: razorpay_payment_id,
+          message:   'Order already placed',
+          duplicate: true,
+        });
+      }
+    }
     throw err;
   } finally {
     conn.release();
@@ -627,33 +716,13 @@ const getUserOrders = asyncHandler(async (req, res) => {
   const [orders] = await pool.query(`
     SELECT o.id, o.customer_name, o.customer_email, o.customer_phone,
            o.address, o.total_amount, o.status, o.payment_method,
-           o.payment_status, o.notes, o.created_at, o.gst_number, o.company_name
+           o.payment_status, o.notes, o.created_at, o.gst_number, o.company_name,
+           o.razorpay_payment_id, o.razorpay_order_id
     FROM orders o WHERE o.customer_id = ?
     ORDER BY o.created_at DESC
   `, [req.user.id]);
 
-  for (const order of orders) {
-    const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images, p.hsn_code,
-             sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
-      FROM order_items oi
-      LEFT JOIN products p ON p.id = oi.product_id
-      LEFT JOIN seller_profiles sp ON sp.user_id = oi.seller_id
-      WHERE oi.order_id = ?
-    `, [order.id]);
-
-    order.items = items.map(item => {
-      let image = '';
-      try {
-        const raw  = item.product_images;
-        const imgs = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
-        image = imgs[0] || '';
-      } catch { image = ''; }
-      const { product_images, ...rest } = item;
-      return { ...rest, image, hsn_code: item.hsn_code, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
-    });
-  }
-
+  await attachOrderItems(orders);
   res.json({ success: true, orders });
 });
 
@@ -804,7 +873,7 @@ const getSellerOrders = asyncHandler(async (req, res) => {
 
   for (const order of orders) {
     const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images, p.hsn_code,
+      SELECT oi.*, p.images AS product_images, p.hsn_code, p.gst_percent,
              sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
       FROM order_items oi
       LEFT JOIN products p ON p.id = oi.product_id
@@ -820,7 +889,7 @@ const getSellerOrders = asyncHandler(async (req, res) => {
         image = imgs[0] || '';
       } catch { image = ''; }
       const { product_images, ...rest } = item;
-      return { ...rest, image, hsn_code: item.hsn_code, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
+      return { ...rest, image, hsn_code: item.hsn_code, gst_percent: item.gst_percent, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
     });
   }
 
@@ -880,32 +949,106 @@ const getAllOrders = asyncHandler(async (req, res) => {
     ${where} GROUP BY o.id ORDER BY o.created_at DESC LIMIT ? OFFSET ?
   `, [...params, Number(limit), offset]);
 
-  for (const order of orders) {
-    const [items] = await pool.query(`
-      SELECT oi.*, p.images AS product_images, p.hsn_code,
-             sp.gst_number AS seller_gst, sp.shop_name AS seller_shop_name
-      FROM order_items oi
-      LEFT JOIN products p ON p.id = oi.product_id
-      LEFT JOIN seller_profiles sp ON sp.user_id = oi.seller_id
-      WHERE oi.order_id = ?
-    `, [order.id]);
+  await attachOrderItems(orders);
+  res.json({ success: true, orders });
+});
 
-    order.items = items.map(item => {
-      let image = '';
-      try {
-        const raw  = item.product_images;
-        const imgs = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
-        image = imgs[0] || '';
-      } catch { image = ''; }
-      const { product_images, ...rest } = item;
-      return { ...rest, image, hsn_code: item.hsn_code, seller_gst: item.seller_gst, seller_shop_name: item.seller_shop_name };
-    });
+// GET /api/admin/payments — all payment transactions
+const getPaymentHistory = asyncHandler(async (req, res) => {
+  const {
+    payment_status,
+    status,
+    search,
+    page = 1,
+    limit = 50,
+  } = req.query;
+
+  const pageNum  = Math.max(1, Number(page) || 1);
+  const limitNum = Math.min(200, Math.max(1, Number(limit) || 50));
+  const offset   = (pageNum - 1) * limitNum;
+
+  const where  = [];
+  const params = [];
+
+  if (payment_status && payment_status !== 'all') {
+    where.push('o.payment_status = ?');
+    params.push(payment_status);
+  }
+  if (status && status !== 'all') {
+    where.push('o.status = ?');
+    params.push(status);
+  }
+  if (search?.trim()) {
+    where.push(`(
+      o.customer_name LIKE ? OR o.customer_email LIKE ? OR
+      o.razorpay_payment_id LIKE ? OR CAST(o.id AS CHAR) LIKE ?
+    )`);
+    const q = `%${search.trim()}%`;
+    params.push(q, q, q, q);
   }
 
-  res.json({ success: true, orders });
+  const whereStr = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const [[stats]] = await pool.query(`
+    SELECT
+      COUNT(*) AS total_payments,
+      COALESCE(SUM(CASE WHEN o.payment_status = 'paid' THEN o.total_amount ELSE 0 END), 0) AS total_revenue,
+      SUM(CASE WHEN o.payment_status = 'paid' THEN 1 ELSE 0 END) AS paid_count,
+      SUM(CASE WHEN o.payment_status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN o.payment_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+      COALESCE(SUM(CASE WHEN o.payment_status = 'paid' AND DATE(o.created_at) = CURDATE() THEN o.total_amount ELSE 0 END), 0) AS today_revenue
+    FROM orders o ${whereStr}
+  `, params);
+
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM orders o ${whereStr}`,
+    params
+  );
+
+  const [payments] = await pool.query(`
+    SELECT o.id, o.customer_name, o.customer_email, o.customer_phone,
+           o.total_amount, o.status, o.payment_method, o.payment_status,
+           o.razorpay_payment_id, o.razorpay_order_id, o.created_at,
+           o.gst_number, o.company_name
+    FROM orders o
+    ${whereStr}
+    ORDER BY o.created_at DESC
+    LIMIT ? OFFSET ?
+  `, [...params, limitNum, offset]);
+
+  for (const payment of payments) {
+    const [items] = await pool.query(
+      'SELECT product_name, quantity, price FROM order_items WHERE order_id = ?',
+      [payment.id]
+    );
+    const subtotal = roundMoney(
+      items.reduce((s, i) => s + Number(i.price) * Number(i.quantity), 0)
+    );
+    payment.subtotal = subtotal;
+    payment.shipping = calcShipping(subtotal);
+    payment.item_count = items.length;
+    payment.items_preview = items.slice(0, 2).map(i => i.product_name).join(', ');
+  }
+
+  res.json({
+    success: true,
+    payments,
+    stats: {
+      total_payments: Number(stats.total_payments),
+      total_revenue:  Number(stats.total_revenue),
+      paid_count:     Number(stats.paid_count),
+      pending_count:  Number(stats.pending_count),
+      failed_count:   Number(stats.failed_count),
+      today_revenue:  Number(stats.today_revenue),
+    },
+    page: pageNum,
+    limit: limitNum,
+    total,
+    totalPages: Math.ceil(total / limitNum) || 1,
+  });
 });
 
 module.exports = {
   createRazorpayOrder, verifyAndPlaceOrder, placeOrder,
-  getUserOrders, getSellerOrders, updateOrderStatus, getAllOrders,
+  getUserOrders, getSellerOrders, updateOrderStatus, getAllOrders, getPaymentHistory,
 };

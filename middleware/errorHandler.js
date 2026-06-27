@@ -4,8 +4,8 @@ const errorHandler = (err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
     return res.status(400).json({ success: false, message: 'File too large (max 5MB)' });
   }
-  if (err.message?.includes('allowed')) {
-    return res.status(400).json({ success: false, message: err.message });
+  if (err.message?.includes('allowed') || err.message?.includes('CORS')) {
+    return res.status(403).json({ success: false, message: 'Origin not allowed' });
   }
   const status = err.statusCode || 500;
   res.status(status).json({

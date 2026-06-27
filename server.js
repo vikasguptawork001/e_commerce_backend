@@ -8,25 +8,22 @@ require('dotenv').config();
 
 const { connectDB }       = require('./config/db');
 const { ensureSchema }    = require('./config/ensureSchema');
+const { corsOriginCallback, validateCorsConfig } = require('./config/cors');
 const routes           = require('./routes/index');
 const { errorHandler } = require('./middleware/errorHandler');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
 
+validateCorsConfig();
+
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
   contentSecurityPolicy: false,
 }));
 
-// CORS — restrict in production via ALLOWED_ORIGINS env (comma-separated)
 app.use(cors({
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    const allowed = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!allowed.length || allowed.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
-  },
+  origin: corsOriginCallback,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
