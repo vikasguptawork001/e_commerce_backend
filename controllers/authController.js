@@ -23,10 +23,17 @@ const register = asyncHandler(async (req, res) => {
   const { name, email, role = 'customer', shop_name, phone } = req.body;
   const password = resolveField(req.body, 'password');
 
-  if (!name || !email || !password) {
+  if (!name || !email || !password || !phone) {
     return res.status(400).json({
       success: false,
-      message: 'Name, email, and password are required',
+      message: 'Name, email, password, and phone number are required',
+    });
+  }
+
+  if (!/^\d{10}$/.test(phone)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Phone number must be a valid 10-digit number',
     });
   }
 
@@ -49,10 +56,20 @@ const register = asyncHandler(async (req, res) => {
     });
   }
 
+  const [[phoneExists]] = await pool.query(
+    'SELECT id FROM users WHERE phone = ?', [phone]
+  );
+  if (phoneExists) {
+    return res.status(409).json({
+      success: false,
+      message: 'This phone number is already registered',
+    });
+  }
+
   const hashed = await bcrypt.hash(password, 10);
   const [result] = await pool.query(
-    'INSERT INTO users (name, email, password, role) VALUES (?,?,?,?)',
-    [name, email, hashed, userRole]
+    'INSERT INTO users (name, email, phone, password, role) VALUES (?,?,?,?,?)',
+    [name, email, phone, hashed, userRole]
   );
   const userId = result.insertId;
 
@@ -65,7 +82,7 @@ const register = asyncHandler(async (req, res) => {
     }
     await pool.query(
       'INSERT INTO seller_profiles (user_id, shop_name, phone) VALUES (?,?,?)',
-      [userId, shop_name, phone || null]
+      [userId, shop_name, phone]
     );
   }
 
@@ -73,7 +90,7 @@ const register = asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     token,
-    user: { id: userId, name, email, role: userRole },
+    user: { id: userId, name, email, role: userRole, phone },
   });
 });
 
@@ -92,7 +109,7 @@ const login = asyncHandler(async (req, res) => {
   }
 
   const [[user]] = await pool.query(
-    'SELECT id, name, email, password, role, is_active FROM users WHERE email = ?',
+    'SELECT id, name, email, phone, password, role, is_active FROM users WHERE email = ?',
     [email]
   );
 
@@ -134,6 +151,7 @@ const login = asyncHandler(async (req, res) => {
       id: user.id,
       name: user.name,
       email: user.email,
+      phone: user.phone,
       role: user.role,
       sellerProfile,
     },
@@ -145,7 +163,7 @@ const login = asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────
 const getMe = asyncHandler(async (req, res) => {
   const [[user]] = await pool.query(
-    'SELECT id, name, email, role, is_active, created_at FROM users WHERE id = ?',
+    'SELECT id, name, email, phone, role, is_active, created_at FROM users WHERE id = ?',
     [req.user.id]
   );
 

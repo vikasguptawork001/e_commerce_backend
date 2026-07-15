@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
   id          INT AUTO_INCREMENT PRIMARY KEY,
   name        VARCHAR(100) NOT NULL,
   email       VARCHAR(150) NOT NULL UNIQUE,
+  phone       VARCHAR(20) UNIQUE DEFAULT NULL,
   password    VARCHAR(255) NOT NULL,
   role        ENUM('admin','seller','customer') NOT NULL DEFAULT 'customer',
   is_active   BOOLEAN DEFAULT TRUE,
@@ -192,16 +193,16 @@ async function seed() {
   // ── Admin user ──
   const adminPass = await bcrypt.hash('admin123', 10);
   await pool.query(
-    `INSERT IGNORE INTO users (name, email, password, role)
-     VALUES ('Admin User', 'admin@ecommerce.com', ?, 'admin')`,
+    `INSERT IGNORE INTO users (name, email, phone, password, role)
+     VALUES ('Admin User', 'admin@ecommerce.com', '9999999999', ?, 'admin')`,
     [adminPass]
   );
 
   // ── Normal user ──
   const userPass = await bcrypt.hash('user123', 10);
   await pool.query(
-    `INSERT IGNORE INTO users (name, email, password, role)
-     VALUES ('Test User', 'user@ecommerce.com', ?, 'customer')`,
+    `INSERT IGNORE INTO users (name, email, phone, password, role)
+     VALUES ('Test User', 'user@ecommerce.com', '8888888888', ?, 'customer')`,
     [userPass]
   );
 

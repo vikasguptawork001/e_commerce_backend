@@ -62,6 +62,19 @@ async function ensureSchema() {
     await pool.query(sql);
   }
 
+  const [userTable] = await pool.query("SHOW TABLES LIKE 'users'");
+  if (userTable.length) {
+    const [userCols] = await pool.query("SHOW COLUMNS FROM users LIKE 'phone'");
+    if (!userCols.length) {
+      await safeQuery('ALTER TABLE users ADD COLUMN phone VARCHAR(20) DEFAULT NULL');
+      try {
+        await pool.query('CREATE UNIQUE INDEX idx_users_phone ON users (phone)');
+      } catch (err) {
+        if (err.code !== 'ER_DUP_KEYNAME') throw err;
+      }
+    }
+  }
+
   const [productTable] = await pool.query("SHOW TABLES LIKE 'products'");
   if (productTable.length) {
     const productColumns = [
