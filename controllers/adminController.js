@@ -72,7 +72,7 @@ const getUsers = asyncHandler(async (req, res) => {
 
   const [users] = await pool.query(`
     SELECT
-      u.id, u.name, u.email, u.role, u.is_active, u.created_at,
+      u.id, u.name, u.email, u.phone, u.role, u.is_active, u.created_at,
       sp.shop_name, sp.is_verified,
       (SELECT COUNT(*) FROM products WHERE seller_id = u.id) AS product_count
     FROM users u
